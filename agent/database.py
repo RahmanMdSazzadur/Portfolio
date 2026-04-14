@@ -28,7 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DEFAULT_DB_PATH = "agent/jobs.db"
+# Default DB stored alongside this module regardless of working directory
+DEFAULT_DB_PATH = str(Path(__file__).parent / "jobs.db")
 
 
 def _now() -> str:

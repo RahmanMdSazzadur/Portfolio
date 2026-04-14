@@ -29,6 +29,26 @@ class ApplicationResult:
     message: str
 
 
+async def _try_fill(page: Page, selectors: list[str], value: str, timeout: int = 3000) -> None:
+    """Attempt to fill the first matching selector from ``selectors`` with ``value``."""
+    for selector in selectors:
+        try:
+            await page.fill(selector, value, timeout=timeout)
+            return
+        except PlaywrightTimeout:
+            continue
+
+
+async def _try_fill_file(page: Page, selectors: list[str], path: str, timeout: int = 3000) -> None:
+    """Attempt to upload a file to the first matching file input selector."""
+    for selector in selectors:
+        try:
+            await page.set_input_files(selector, path, timeout=timeout)
+            return
+        except PlaywrightTimeout:
+            continue
+
+
 async def _fill_common_fields(page: Page) -> None:
     """Fill standard name/email/phone fields that appear across most ATS forms."""
     candidate_name = os.environ.get("CANDIDATE_NAME", "")
@@ -36,49 +56,17 @@ async def _fill_common_fields(page: Page) -> None:
     candidate_phone = os.environ.get("CANDIDATE_PHONE", "")
     cv_pdf = os.environ.get("CV_PDF_PATH", "")
 
-    # Name
-    for selector in ['input[name*="name" i]', 'input[placeholder*="name" i]']:
-        try:
-            await page.fill(selector, candidate_name, timeout=3000)
-        except PlaywrightTimeout:
-            pass
+    first = candidate_name.split()[0] if candidate_name else ""
+    last = candidate_name.split()[-1] if candidate_name else ""
 
-    # First / Last name split
-    for selector in ['input[name*="first" i]', 'input[placeholder*="first" i]']:
-        try:
-            first = candidate_name.split()[0] if candidate_name else ""
-            await page.fill(selector, first, timeout=3000)
-        except PlaywrightTimeout:
-            pass
+    await _try_fill(page, ['input[name*="name" i]', 'input[placeholder*="name" i]'], candidate_name)
+    await _try_fill(page, ['input[name*="first" i]', 'input[placeholder*="first" i]'], first)
+    await _try_fill(page, ['input[name*="last" i]', 'input[placeholder*="last" i]'], last)
+    await _try_fill(page, ['input[type="email"]', 'input[name*="email" i]'], candidate_email)
+    await _try_fill(page, ['input[type="tel"]', 'input[name*="phone" i]'], candidate_phone)
 
-    for selector in ['input[name*="last" i]', 'input[placeholder*="last" i]']:
-        try:
-            last = candidate_name.split()[-1] if candidate_name else ""
-            await page.fill(selector, last, timeout=3000)
-        except PlaywrightTimeout:
-            pass
-
-    # Email
-    for selector in ['input[type="email"]', 'input[name*="email" i]']:
-        try:
-            await page.fill(selector, candidate_email, timeout=3000)
-        except PlaywrightTimeout:
-            pass
-
-    # Phone
-    for selector in ['input[type="tel"]', 'input[name*="phone" i]']:
-        try:
-            await page.fill(selector, candidate_phone, timeout=3000)
-        except PlaywrightTimeout:
-            pass
-
-    # Resume upload
     if cv_pdf:
-        for selector in ['input[type="file"]']:
-            try:
-                await page.set_input_files(selector, cv_pdf, timeout=3000)
-            except PlaywrightTimeout:
-                pass
+        await _try_fill_file(page, ['input[type="file"]'], cv_pdf)
 
 
 async def apply_to_job(job: JobRecord) -> ApplicationResult:

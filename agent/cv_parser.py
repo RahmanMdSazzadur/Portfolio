@@ -50,6 +50,10 @@ def parse_cv(cv_input: str, is_pdf_path: bool = False) -> dict[str, Any]:
 
     client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
+    # ~12 000 chars ≈ 3 000 tokens — well within GPT-4o's 128 k context window.
+    # Adjust if the CV is very long and you need more detail.
+    MAX_CV_TEXT_LENGTH = 12_000
+
     prompt = """
 You are a CV parsing assistant. Extract structured information from the CV text below.
 Return a JSON object with exactly these keys:
@@ -66,7 +70,7 @@ CV Text:
 {cv_text}
 ---
 Return ONLY valid JSON. No markdown fences.
-""".format(cv_text=raw_text[:12_000])  # stay within token budget
+""".format(cv_text=raw_text[:MAX_CV_TEXT_LENGTH])
 
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -82,12 +86,14 @@ Return ONLY valid JSON. No markdown fences.
 def load_or_parse_profile(
     cv_text: str | None = None,
     cv_pdf: str | None = None,
-    cache_path: str = "agent/profile.json",
+    cache_path: str | None = None,
 ) -> dict[str, Any]:
     """
     Return a cached profile if it exists, otherwise parse and cache it.
     Pass ``cv_text`` or ``cv_pdf`` to force a fresh parse.
     """
+    if cache_path is None:
+        cache_path = str(Path(__file__).parent / "profile.json")
     cache = Path(cache_path)
 
     if cv_text:

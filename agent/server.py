@@ -38,7 +38,10 @@ def run(req: RunRequest):
         )
         return result
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        # Log full details server-side; expose only a generic message to the client
+        import logging
+        logging.getLogger(__name__).exception("Pipeline error")
+        raise HTTPException(status_code=500, detail="An internal error occurred. Check server logs.") from exc
 
 
 @app.get("/health")

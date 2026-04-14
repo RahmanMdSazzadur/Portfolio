@@ -36,7 +36,7 @@ from email_generator import GeneratedEmail
 
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
-_COUNTER_FILE = Path("agent/daily_send_counter.json")
+_COUNTER_FILE = Path(__file__).parent / "daily_send_counter.json"
 
 
 def _load_counter() -> dict:
