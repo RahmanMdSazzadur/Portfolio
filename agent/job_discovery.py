@@ -1,15 +1,16 @@
 """
 Job Discovery Agent
 --------------------
-Searches the Adzuna API for job listings matching the user's target role and
-location, then stores the results in the local SQLite database.
+Searches the RemoteOK public API (no auth required, completely free) for remote
+job listings matching the user's target role, then stores the results in the
+local SQLite database.
 
-Adzuna API docs: https://developer.adzuna.com/activedocs
+RemoteOK API docs: https://remoteok.com/api
 """
 
 from __future__ import annotations
 
-import os
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,105 +20,112 @@ import requests
 from database import Database, JobRecord
 
 
-ADZUNA_BASE = "https://api.adzuna.com/v1/api/jobs"
+REMOTEOK_API = "https://remoteok.com/api"
+
+# RemoteOK requires a User-Agent header or it returns a 403
+_HEADERS = {"User-Agent": "JobAgent/1.0 (portfolio project)"}
 
 
 @dataclass
-class AdzunaJob:
+class RemoteOKJob:
     id: str
     title: str
     company: str
     location: str
     description: str
     url: str
-    salary_min: float | None = None
-    salary_max: float | None = None
+    tags: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
-
-
-def _country_code(location: str) -> str:
-    """Guess the Adzuna country code from a location string."""
-    location_lower = location.lower()
-    if any(k in location_lower for k in ("uk", "london", "manchester", "united kingdom")):
-        return "gb"
-    if any(k in location_lower for k in ("canada", "toronto", "vancouver")):
-        return "ca"
-    if any(k in location_lower for k in ("australia", "sydney", "melbourne")):
-        return "au"
-    return "us"  # default
 
 
 def search_jobs(
     job_title: str,
     location: str = "Remote",
     max_results: int = 20,
-    country: str | None = None,
-) -> list[AdzunaJob]:
+) -> list[RemoteOKJob]:
     """
-    Query the Adzuna API and return a list of matching job listings.
+    Query the RemoteOK API and return jobs matching ``job_title``.
 
-    Required env vars:
-        ADZUNA_APP_ID   – your Adzuna application ID
-        ADZUNA_API_KEY  – your Adzuna API key
+    No API key required — the endpoint is publicly accessible.
     """
-    app_id = os.environ["ADZUNA_APP_ID"]
-    api_key = os.environ["ADZUNA_API_KEY"]
-    cc = country or _country_code(location)
+    # Build a tag-based search URL using keywords from the job title
+    tags = "+".join(job_title.lower().split())
+    url = f"{REMOTEOK_API}?tags={tags}"
 
-    jobs: list[AdzunaJob] = []
-    page = 1
-    results_per_page = min(max_results, 50)
+    resp = requests.get(url, headers=_HEADERS, timeout=20)
+    resp.raise_for_status()
 
-    while len(jobs) < max_results:
-        url = f"{ADZUNA_BASE}/{cc}/search/{page}"
-        params = {
-            "app_id": app_id,
-            "app_key": api_key,
-            "what": job_title,
-            "where": location,
-            "results_per_page": results_per_page,
-            "content-type": "application/json",
-        }
+    raw_list: list[dict[str, Any]] = resp.json()
 
-        resp = requests.get(url, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+    # First element is a legal notice dict; real jobs start at index 1
+    jobs: list[RemoteOKJob] = []
+    keywords = {w.lower() for w in job_title.split()}
 
-        raw_jobs: list[dict[str, Any]] = data.get("results", [])
-        if not raw_jobs:
+    for item in raw_list[1:]:
+        if not isinstance(item, dict):
+            continue
+
+        title: str = item.get("position", "")
+        company: str = item.get("company", "Unknown")
+        description: str = item.get("description", "")
+
+        # Loose relevance filter: title or description contains at least one keyword
+        combined = (title + " " + description).lower()
+        if not any(kw in combined for kw in keywords):
+            continue
+
+        job_url: str = item.get("url", "") or f"https://remoteok.com/remote-jobs/{item.get('id', '')}"
+        job_id: str = str(item.get("id", "")) or hashlib.md5(job_url.encode()).hexdigest()[:12]
+
+        jobs.append(
+            RemoteOKJob(
+                id=job_id,
+                title=title or job_title,
+                company=company,
+                location=item.get("location", "Remote") or "Remote",
+                description=description,
+                url=job_url,
+                tags=item.get("tags", []),
+                raw=item,
+            )
+        )
+
+        if len(jobs) >= max_results:
             break
 
-        for item in raw_jobs:
-            company_name = (
-                item.get("company", {}).get("display_name", "Unknown")
-                if isinstance(item.get("company"), dict)
-                else str(item.get("company", "Unknown"))
-            )
-            loc_name = (
-                item.get("location", {}).get("display_name", location)
-                if isinstance(item.get("location"), dict)
-                else str(item.get("location", location))
-            )
+    # If the tag search returned nothing, fall back to the full feed with
+    # client-side keyword filtering (RemoteOK serves at most ~300 recent jobs)
+    if not jobs:
+        time.sleep(1)
+        resp = requests.get(REMOTEOK_API, headers=_HEADERS, timeout=20)
+        resp.raise_for_status()
+        raw_list = resp.json()
+
+        for item in raw_list[1:]:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("position", "")
+            combined = (title + " " + item.get("description", "")).lower()
+            if not any(kw in combined for kw in keywords):
+                continue
+
+            job_url = item.get("url", "") or f"https://remoteok.com/remote-jobs/{item.get('id', '')}"
+            job_id = str(item.get("id", "")) or hashlib.md5(job_url.encode()).hexdigest()[:12]
+
             jobs.append(
-                AdzunaJob(
-                    id=str(item.get("id", "")),
-                    title=item.get("title", job_title),
-                    company=company_name,
-                    location=loc_name,
+                RemoteOKJob(
+                    id=job_id,
+                    title=title or job_title,
+                    company=item.get("company", "Unknown"),
+                    location=item.get("location", "Remote") or "Remote",
                     description=item.get("description", ""),
-                    url=item.get("redirect_url", ""),
-                    salary_min=item.get("salary_min"),
-                    salary_max=item.get("salary_max"),
+                    url=job_url,
+                    tags=item.get("tags", []),
                     raw=item,
                 )
             )
             if len(jobs) >= max_results:
                 break
-
-        if len(raw_jobs) < results_per_page:
-            break  # no more pages
-        page += 1
-        time.sleep(0.5)  # be polite
 
     return jobs
 
@@ -135,10 +143,10 @@ def discover_and_store(
     if db is None:
         db = Database()
 
-    adzuna_jobs = search_jobs(job_title, location, max_results)
+    remote_jobs = search_jobs(job_title, location, max_results)
     stored: list[JobRecord] = []
 
-    for job in adzuna_jobs:
+    for job in remote_jobs:
         existing = db.get_job(job.id)
         if existing:
             continue  # already in DB, skip

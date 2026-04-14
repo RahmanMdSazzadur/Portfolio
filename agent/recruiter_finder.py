@@ -1,22 +1,39 @@
 """
 Recruiter Contact Finder
 ------------------------
-Given a company name and domain, attempts to locate a recruiter / HR email
-address using the Hunter.io Lookup and Search APIs.
+Guesses likely recruiter / HR email addresses for a company using common
+inbox patterns (careers@, hr@, jobs@, …) and verifies that the company's
+domain actually has an MX record before returning an address.
 
-Hunter.io API docs: https://hunter.io/api-documentation
+No external API key required — uses only DNS lookups (via dnspython) and
+URL parsing from the standard library.
 """
 
 from __future__ import annotations
 
-import os
 import re
+import urllib.parse
 from dataclasses import dataclass
 
-import requests
+try:
+    import dns.resolver
+    _DNS_AVAILABLE = True
+except ImportError:
+    _DNS_AVAILABLE = False
 
 
-HUNTER_BASE = "https://api.hunter.io/v2"
+# Ordered by typical deliverability / likelihood of being monitored
+_GENERIC_PATTERNS: list[str] = [
+    "careers@{domain}",
+    "hr@{domain}",
+    "jobs@{domain}",
+    "recruiting@{domain}",
+    "talent@{domain}",
+    "recruitment@{domain}",
+    "hiring@{domain}",
+    "apply@{domain}",
+    "info@{domain}",
+]
 
 
 @dataclass
@@ -25,7 +42,20 @@ class RecruiterContact:
     first_name: str | None
     last_name: str | None
     position: str | None
-    confidence: int  # 0-100 as returned by Hunter
+    confidence: int  # 0-100; pattern-guessed addresses get 50
+
+
+def _extract_domain_from_url(url: str) -> str | None:
+    """Pull the registrable domain from a job-listing URL."""
+    try:
+        host = urllib.parse.urlparse(url).hostname or ""
+        # Strip common subdomains (www, jobs, careers, …)
+        parts = host.split(".")
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+    except Exception:
+        pass
+    return None
 
 
 def _guess_domain(company: str) -> str:
@@ -34,94 +64,75 @@ def _guess_domain(company: str) -> str:
     plausible domain.  In production, prefer extracting the domain directly
     from the job listing URL.
     """
-    name = re.sub(r"\b(ltd|llc|inc|corp|limited|plc|gmbh)\b", "", company, flags=re.IGNORECASE)
+    name = re.sub(
+        r"\b(ltd|llc|inc|corp|limited|plc|gmbh|group|global|solutions|technologies|tech)\b",
+        "",
+        company,
+        flags=re.IGNORECASE,
+    )
     slug = re.sub(r"[^a-z0-9]", "", name.lower().strip())
     return f"{slug}.com"
+
+
+def _has_mx_record(domain: str) -> bool:
+    """Return True if *domain* has at least one MX DNS record."""
+    if not _DNS_AVAILABLE:
+        # dnspython not installed — assume reachable to avoid blocking the pipeline
+        return True
+    try:
+        answers = dns.resolver.resolve(domain, "MX", lifetime=5)
+        return len(answers) > 0
+    except Exception:
+        return False
 
 
 def find_recruiter_email(
     company: str,
     domain: str | None = None,
-    department: str = "human resources",
+    job_url: str | None = None,
 ) -> RecruiterContact | None:
     """
-    Try to find a recruiter or HR contact for ``company``.
+    Return a best-guess recruiter / HR email for *company*.
 
-    Required env vars:
-        HUNTER_API_KEY – your Hunter.io API key (free tier: 25 searches/month)
+    Resolution order:
+    1. Use *domain* if explicitly supplied.
+    2. Extract domain from *job_url* if provided.
+    3. Guess from the company name.
 
-    Parameters
-    ----------
-    company:
-        Company name as it appears in the job listing.
-    domain:
-        Explicitly provided company domain (e.g. ``acme.com``).
-        If omitted, a domain is guessed from the company name.
-    department:
-        Filter contacts by department.  Use ``None`` to skip filtering.
-
-    Returns
-    -------
-    The best-confidence recruiter contact, or ``None`` if nothing was found.
+    Returns ``None`` if the resolved domain has no MX record (i.e. cannot
+    receive email) and we cannot make a reliable guess.
     """
-    api_key = os.environ["HUNTER_API_KEY"]
-    resolved_domain = domain or _guess_domain(company)
+    resolved_domain: str | None = None
 
-    # 1. Domain Search — returns all email addresses found for a domain
-    params: dict[str, str] = {
-        "domain": resolved_domain,
-        "api_key": api_key,
-        "limit": "10",
-    }
-    if department:
-        params["department"] = department
+    if domain:
+        resolved_domain = domain
+    elif job_url:
+        resolved_domain = _extract_domain_from_url(job_url)
 
-    resp = requests.get(f"{HUNTER_BASE}/domain-search", params=params, timeout=10)
-    if not resp.ok:
+    if not resolved_domain:
+        resolved_domain = _guess_domain(company)
+
+    if not _has_mx_record(resolved_domain):
         return None
 
-    data = resp.json().get("data", {})
-    emails: list[dict] = data.get("emails", [])
-
-    if not emails:
-        # 2. Fallback: broaden search without department filter
-        params.pop("department", None)
-        resp = requests.get(f"{HUNTER_BASE}/domain-search", params=params, timeout=10)
-        if not resp.ok:
-            return None
-        data = resp.json().get("data", {})
-        emails = data.get("emails", [])
-
-    if not emails:
-        return None
-
-    # Pick the contact with the highest confidence score
-    best = max(emails, key=lambda e: e.get("confidence", 0))
-
+    # Return the first (highest-priority) generic pattern
+    email = _GENERIC_PATTERNS[0].format(domain=resolved_domain)
     return RecruiterContact(
-        email=best["value"],
-        first_name=best.get("first_name"),
-        last_name=best.get("last_name"),
-        position=best.get("position"),
-        confidence=best.get("confidence", 0),
+        email=email,
+        first_name=None,
+        last_name=None,
+        position="HR / Recruiting",
+        confidence=50,
     )
 
 
 def verify_email(email: str) -> bool:
     """
-    Verify that an email address is deliverable using Hunter's Email Verifier.
-    Returns True if the verification status is 'valid'.
-
-    Required env vars:
-        HUNTER_API_KEY
+    Lightweight verification: check that the email's domain has an MX record.
+    (Full SMTP VRFY is unreliable as most servers disable it.)
     """
-    api_key = os.environ["HUNTER_API_KEY"]
-    resp = requests.get(
-        f"{HUNTER_BASE}/email-verifier",
-        params={"email": email, "api_key": api_key},
-        timeout=15,
-    )
-    if not resp.ok:
+    try:
+        domain = email.split("@")[1]
+        return _has_mx_record(domain)
+    except Exception:
         return False
-    result = resp.json().get("data", {})
-    return result.get("status") == "valid"

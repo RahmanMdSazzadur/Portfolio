@@ -1,41 +1,33 @@
 """
 Email Sender
 ------------
-Sends generated cold emails via the Gmail API (OAuth 2.0) with rate-limiting
-to protect domain reputation (max 25 emails per day by default).
+Sends generated cold emails via SMTP (no OAuth required).  Works with any
+SMTP-capable provider:
 
-Setup:
-    1. Create a Google Cloud project and enable the Gmail API.
-    2. Create OAuth 2.0 credentials (Desktop application).
-    3. Download the credentials JSON and set GMAIL_CREDENTIALS_PATH.
-    4. On first run, a browser window opens for consent — token is cached.
+  • Gmail  — enable 2FA → App Passwords → generate a 16-character password
+  • Outlook — use your normal password (or an app password if 2FA is on)
+  • Mailgun / SendGrid SMTP relay — also work out of the box
 
 Required env vars:
-    GMAIL_CREDENTIALS_PATH  – path to the OAuth credentials JSON file
-    GMAIL_TOKEN_PATH        – path where the token cache will be stored
-                              (default: agent/gmail_token.json)
-    GMAIL_SENDER            – the "From" address (your Gmail address)
-    DAILY_EMAIL_LIMIT       – max emails per day (default: 25)
+    SMTP_USER      – the "From" address and SMTP username
+    SMTP_PASSWORD  – the SMTP password (or Gmail app password)
+    SMTP_HOST      – SMTP server hostname   (default: smtp.gmail.com)
+    SMTP_PORT      – SMTP port              (default: 587, STARTTLS)
+    DAILY_EMAIL_LIMIT – max emails per day  (default: 25)
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import os
+import smtplib
 from datetime import date
 from email.mime.text import MIMEText
 from pathlib import Path
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-
 from email_generator import GeneratedEmail
 
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 _COUNTER_FILE = Path(__file__).parent / "daily_send_counter.json"
 
 
@@ -53,7 +45,6 @@ def _daily_limit_reached() -> bool:
     limit = int(os.environ.get("DAILY_EMAIL_LIMIT", 25))
     counter = _load_counter()
     if counter["date"] != str(date.today()):
-        # New day — reset
         counter = {"date": str(date.today()), "count": 0}
         _save_counter(counter)
     return counter["count"] >= limit
@@ -67,48 +58,32 @@ def _increment_counter() -> None:
     _save_counter(counter)
 
 
-def _get_gmail_service():
-    credentials_path = os.environ["GMAIL_CREDENTIALS_PATH"]
-    token_path = os.environ.get("GMAIL_TOKEN_PATH", "agent/gmail_token.json")
-
-    creds: Credentials | None = None
-    if Path(token_path).exists():
-        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
-            creds = flow.run_local_server(port=0)
-        Path(token_path).write_text(creds.to_json())
-
-    return build("gmail", "v1", credentials=creds)
-
-
 def send_email(generated: GeneratedEmail) -> bool:
     """
-    Send a single cold email.
+    Send a single cold email via SMTP.
 
-    Returns True if the email was sent successfully, False if the daily
-    limit was reached or sending failed.
+    Returns True if the email was sent successfully, False if the daily limit
+    was reached or sending failed.
     """
     if _daily_limit_reached():
         print(f"[Email Sender] Daily limit reached — skipping {generated.recruiter_email}")
         return False
 
-    sender = os.environ["GMAIL_SENDER"]
-    message = MIMEText(generated.body, "plain")
-    message["to"] = generated.recruiter_email
-    message["from"] = sender
-    message["subject"] = generated.subject
+    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ["SMTP_USER"]
+    smtp_pass = os.environ["SMTP_PASSWORD"]
 
-    encoded = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    msg = MIMEText(generated.body, "plain")
+    msg["Subject"] = generated.subject
+    msg["From"] = smtp_user
+    msg["To"] = generated.recruiter_email
 
-    service = _get_gmail_service()
-    service.users().messages().send(
-        userId="me", body={"raw": encoded}
-    ).execute()
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_user, [generated.recruiter_email], msg.as_string())
 
     _increment_counter()
     print(f"[Email Sender] Sent → {generated.recruiter_email} | Subject: {generated.subject}")

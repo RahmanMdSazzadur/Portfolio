@@ -2,7 +2,7 @@
 CV Parser
 ---------
 Extracts structured profile data (skills, experience, projects) from a CV PDF
-or plain text using PyMuPDF + OpenAI GPT-4o.
+or plain text using PyMuPDF + Groq (llama3-70b — free tier).
 """
 
 from __future__ import annotations
@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import openai
+
+
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+_GROQ_MODEL = "llama3-70b-8192"
 
 try:
     import fitz  # PyMuPDF
@@ -48,7 +52,10 @@ def parse_cv(cv_input: str, is_pdf_path: bool = False) -> dict[str, Any]:
     """
     raw_text = extract_text_from_pdf(cv_input) if is_pdf_path else cv_input
 
-    client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client = openai.OpenAI(
+        api_key=os.environ["GROQ_API_KEY"],
+        base_url=_GROQ_BASE_URL,
+    )
 
     # ~12 000 chars ≈ 3 000 tokens — well within GPT-4o's 128 k context window.
     # Adjust if the CV is very long and you need more detail.
@@ -73,7 +80,7 @@ Return ONLY valid JSON. No markdown fences.
 """.format(cv_text=raw_text[:MAX_CV_TEXT_LENGTH])
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=_GROQ_MODEL,
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
         response_format={"type": "json_object"},

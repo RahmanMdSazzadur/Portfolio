@@ -65,7 +65,7 @@ def run_pipeline(
     log(f"Profile loaded: {profile.get('name', 'unknown')} — {len(profile.get('skills', []))} skills")
 
     # ── 2. Job Discovery ──────────────────────────────────────────────────────
-    log(f"Searching Adzuna for '{job_title}' in '{location}'…")
+    log(f"Searching RemoteOK for '{job_title}' in '{location}'…")
     new_jobs: list[JobRecord] = discover_and_store(job_title, location, max_jobs, db)
     log(f"Found {len(new_jobs)} new job listing(s)")
 
@@ -77,9 +77,9 @@ def run_pipeline(
         log(f"Looking up recruiter for {job.company}…")
         contact = None
         try:
-            contact = find_recruiter_email(job.company)
+            contact = find_recruiter_email(job.company, job_url=job.url)
         except Exception as exc:
-            log(f"  Hunter.io error for {job.company}: {exc}")
+            log(f"  Recruiter lookup error for {job.company}: {exc}")
 
         if contact:
             db.update_recruiter(job.job_id, contact.email, contact.first_name)

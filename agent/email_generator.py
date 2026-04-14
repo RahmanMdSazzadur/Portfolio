@@ -1,8 +1,9 @@
 """
 Email Generator Agent
 ----------------------
-Uses GPT-4o to write a short, hyper-personalised cold email for each job
-opportunity, grounded in the candidate's CV profile and the job description.
+Uses Groq (llama3-70b, free tier) to write a short, hyper-personalised cold
+email for each job opportunity, grounded in the candidate's CV profile and the
+job description.
 """
 
 from __future__ import annotations
@@ -12,6 +13,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import openai
+
+
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+_GROQ_MODEL = "llama3-70b-8192"
 
 
 @dataclass
@@ -68,7 +73,10 @@ def generate_cold_email(
     recruiter_email:
         The recipient email address (embedded in the result for convenience).
     """
-    client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    client = openai.OpenAI(
+        api_key=os.environ["GROQ_API_KEY"],
+        base_url=_GROQ_BASE_URL,
+    )
 
     greeting = f"Hi {recruiter_name}," if recruiter_name else "Hi,"
 
@@ -89,7 +97,7 @@ Return a JSON object with exactly two keys: "subject" and "body".
 """.strip()
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=_GROQ_MODEL,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
