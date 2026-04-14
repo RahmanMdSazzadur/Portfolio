@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# agent — local state & credentials (never commit these)
+agent/jobs.db
+agent/profile.json
+agent/gmail_token.json
+agent/gmail_credentials.json
+agent/daily_send_counter.json
+agent/__pycache__/
+agent/*.pyc

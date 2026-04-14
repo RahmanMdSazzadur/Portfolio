@@ -12,6 +12,7 @@ const navLinks = [
   { name: "PROJECTS", href: "#projects" },
   { name: "AUTOMATION", href: "#automation" },
   { name: "CONTACT", href: "#contact" },
+  { name: "AI AGENT", href: "/agent" },
 ];
 
 export function Navbar() {

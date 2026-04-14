@@ -65,4 +65,17 @@ export const projects: Project[] = [
       conclusion: "Your sales team closes. The machine does everything else — scrape, enrich, score, write, send, follow up, repeat. Outbound on autopilot."
     }
   },
+  {
+    id: "ai-job-agent",
+    title: "AI Job Application Agent",
+    cat: "AI / Automation",
+    date: "2025",
+    img: "/projects/ai-job-agent.png",
+    bgImage: "/projects/ai-job-agent.png",
+    about: {
+      overview: "An autonomous multi-agent pipeline that discovers relevant job listings via the Adzuna API, finds recruiter email addresses through Hunter.io, generates hyper-personalized cold emails using GPT-4o based on your CV and the job description, and auto-applies to positions with Playwright — all tracked in a real-time dashboard.",
+      metrics: ["Multi-Agent Pipeline", "GPT-4o Personalization", "Auto Cold Emails", "Playwright Auto-Apply"],
+      conclusion: "Set your target role, upload your CV, and let the agent do the rest — it finds jobs, writes tailored pitches for each recruiter, sends them, and fills out application forms. Job hunting on full autopilot."
+    }
+  },
 ];
